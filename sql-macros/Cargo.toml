@@ -1,6 +1,6 @@
 [package]
 name = "sql-macros"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 categories = ["database"]
 description = "Auto generate sql queries for CRUD on sqlx"
@@ -11,4 +11,4 @@ readme = "../README.md"
 
 [dependencies]
 sql-macros-core = { version = "0.1.0", path = "../sql-macros-core" }
-sql-macros-derive = { version = "0.1.1", path = "../sql-macros-derive" }
+sql-macros-derive = { version = "0.2.0", path = "../sql-macros-derive" }

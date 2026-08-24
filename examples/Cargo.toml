@@ -1,0 +1,10 @@
+[package]
+name = "sql-macros-examples"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+sql-macros = { path = "../sql-macros" }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "any", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -1,88 +1,78 @@
-use crate::parser::{
-    Table, extract_fields_as_params, fields_named_struct, generate_sql_params_condition,
-    get_filters, get_method_params, parse_fields_with_type,
-};
-use proc_macro::TokenStream;
 use quote::quote;
 
+use crate::model::{self, TableModel};
+
 fn generate_method(
-    method_name: &str,
-    _struct_name: &proc_macro2::Ident,
-    params: &proc_macro2::TokenStream,
-    query: &str,
-    filter_fields: &Vec<proc_macro2::Ident>,
+    method_name: &syn::Ident,
+    table_name: &str,
+    sql_filters: &str,
+    choices: &[model::FilterChoice],
 ) -> proc_macro2::TokenStream {
-    let mn =
-        syn::parse_str::<proc_macro2::Ident>(method_name).expect("Failed to parse code string");
+    let params = model::params_tokens_for_choices(choices);
+    let idents = model::idents_for_choices(choices);
+    let query = format!("DELETE FROM {table_name} WHERE {sql_filters}");
+
     quote! {
-        #[doc=#query]
-        pub async fn #mn(conn: &mut sqlx::PgConnection, #params) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+        #[doc = #query]
+        pub async fn #method_name(
+            conn: &mut sqlx::PgConnection,
+            #params
+        ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
             let result = sqlx::query!(
                 #query,
-                #(#filter_fields),*
+                #(#idents),*
             )
             .execute(&mut *conn)
             .await?;
-            Ok(result.into()) // .into need for different db postgres and mysql
+            Ok(result.into())
         }
     }
 }
 
-pub fn sql_delete_macro_derive(input: &mut syn::DeriveInput) -> TokenStream {
-    let table = Table::parse(input);
-    let struct_name = input.ident.clone();
-    let table_name = table.get_name();
+pub fn expand(model: &TableModel) -> darling::Result<proc_macro2::TokenStream> {
+    let struct_name = &model.struct_name;
+    let mut methods = Vec::new();
 
-    let fields = fields_named_struct(input);
-    let fields_with_type = parse_fields_with_type(fields, "delete");
-
-    let mut methods = vec![];
-    for field_with_type in fields_with_type {
-        let params = get_method_params(vec![field_with_type.clone()]);
-        let filter_fields = get_filters(vec![field_with_type.clone()]);
-        let sql_filters = generate_sql_params_condition(&filter_fields);
-
-        let query = format!("DELETE FROM {table_name} WHERE {sql_filters}");
-        methods.push(generate_method(
-            &format!("delete_by_{}", field_with_type.0),
-            &struct_name,
-            &params,
-            &query,
-            &filter_fields,
-        ));
-    }
-
-    let ff = extract_fields_as_params(fields);
-    for (method_name, method_fields) in table.get_delete() {
-        let fields_with_type: Vec<(proc_macro2::Ident, syn::Type)> = ff
-            .clone()
-            .into_iter()
-            .filter(|(name_field, _)| method_fields.contains(&name_field.to_string()))
-            .collect();
-        if fields_with_type.is_empty() {
-            panic!(
-                "No has params for method {method_name} or fields ({}) not contains in {struct_name}.",
-                method_fields.join(", ")
-            )
+    for column in model.columns.iter().filter(|c| c.is_delete_filter) {
+        for &op in &column.ops {
+            let method_name = if op == model::Operator::Eq {
+                format!("delete_by_{}", column.ident)
+            } else {
+                format!("delete_by_{}_{}", column.ident, model::op_word(op))
+            };
+            let method_name = syn::Ident::new(&method_name, column.ident.span());
+            let choices = vec![model::FilterChoice { column, op }];
+            let sql_filters = model::sql_condition_for_choices(&choices, 0);
+            methods.push(generate_method(
+                &method_name,
+                &model.table_name,
+                &sql_filters,
+                &choices,
+            ));
         }
-        let params = get_method_params(fields_with_type.clone());
-        let filter_fields = get_filters(fields_with_type);
-        let sql_filters = generate_sql_params_condition(&filter_fields);
-        let query = format!("DELETE FROM {table_name} WHERE {sql_filters}");
+    }
 
+    for custom in model.custom_delete_methods()? {
+        let sql_filters = model::render_custom_where(&custom, 0);
+        let choices: Vec<model::FilterChoice> = custom
+            .filters
+            .iter()
+            .map(|&column| model::FilterChoice {
+                column,
+                op: model::Operator::Eq,
+            })
+            .collect();
         methods.push(generate_method(
-            &method_name,
-            &struct_name,
-            &params,
-            &query,
-            &filter_fields,
+            &custom.method_name,
+            &model.table_name,
+            &sql_filters,
+            &choices,
         ));
     }
 
-    let token_stream = quote! {
+    Ok(quote! {
         impl #struct_name {
             #(#methods)*
         }
-    };
-    token_stream.into()
+    })
 }

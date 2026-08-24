@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM users WHERE email IN ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "98bdd25d9affc1c4b76423a8528beda7d77e2f6d3a19984baf2ee1abfefb67d0"
+}

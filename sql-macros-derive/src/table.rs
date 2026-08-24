@@ -1,19 +1,18 @@
-use proc_macro::TokenStream;
 use quote::quote;
 
-use crate::parser::{Table, fields_named_struct, get_sql_columns, get_struct_fields};
+use crate::model::TableModel;
 
-pub fn sql_table_macro_derive(input: &syn::DeriveInput) -> syn::Result<TokenStream> {
-    let table = Table::parse(input);
-    let struct_name = input.ident.clone();
-    let table_name = table.get_name();
+pub fn expand(model: &TableModel) -> darling::Result<proc_macro2::TokenStream> {
+    let struct_name = &model.struct_name;
+    let table_name = &model.table_name;
+    let sql_columns: Vec<&str> = model
+        .columns
+        .iter()
+        .map(|c| c.sql_select_expr.as_str())
+        .collect();
+    let struct_fields: Vec<String> = model.columns.iter().map(|c| c.ident.to_string()).collect();
 
-    let fields = fields_named_struct(input);
-
-    let sql_columns = get_sql_columns(fields);
-    let struct_fields = get_struct_fields(fields);
-
-    let token_stream = quote! {
+    Ok(quote! {
         impl sql_macros::SqlTable for #struct_name {
             fn name() -> &'static str {
                 #table_name
@@ -29,6 +28,5 @@ pub fn sql_table_macro_derive(input: &syn::DeriveInput) -> syn::Result<TokenStre
                 ]
             }
         }
-    };
-    Ok(token_stream.into())
+    })
 }

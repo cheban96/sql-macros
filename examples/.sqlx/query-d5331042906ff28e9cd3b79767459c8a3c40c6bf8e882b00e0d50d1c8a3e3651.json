@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (email, is_active) VALUES ($1,$2) ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active RETURNING id, email",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d5331042906ff28e9cd3b79767459c8a3c40c6bf8e882b00e0d50d1c8a3e3651"
+}

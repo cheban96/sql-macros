@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM users WHERE is_active=$1 AND is_removed=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68e95b36f939c941f567519563cdf3a7a90508913f8d8069c931035f92350f4b"
+}
