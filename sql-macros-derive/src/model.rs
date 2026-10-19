@@ -10,7 +10,7 @@
 
 use quote::ToTokens;
 
-use crate::attrs::{FieldAttrs, MethodFilterSpec, MethodSpec, TableAttrs};
+use crate::attrs::{FieldAttrs, MethodFilterSpec, MethodSpec, TableAttrs, UpsertSpec};
 pub use crate::attrs::Operator;
 
 /// One field of the annotated struct, after attribute parsing.
@@ -136,6 +136,18 @@ pub struct CustomMethod<'a> {
     pub template: FilterTemplate<'a>,
 }
 
+/// A named composite `ON CONFLICT` target (`#[table(upsert =
+/// insert_or_update_member(org_id, user_id))]`), resolved against the
+/// struct's actual fields — the columns that appear in this method's
+/// `ON CONFLICT (...)` clause. Separate from the single, optional
+/// bare-`#[table(upsert)]` target on [`TableModel::upsert_target`], which
+/// only ever affects the default `insert()`/`insert_many()`.
+#[derive(Debug)]
+pub struct CustomUpsert<'a> {
+    pub method_name: syn::Ident,
+    pub targets: Vec<&'a Column>,
+}
+
 #[derive(Debug)]
 pub struct TableModel {
     pub struct_name: syn::Ident,
@@ -149,6 +161,7 @@ pub struct TableModel {
     custom_select_many: Vec<MethodSpec>,
     custom_delete: Vec<MethodSpec>,
     custom_update: Vec<MethodSpec>,
+    custom_upsert: Vec<UpsertSpec>,
 }
 
 impl TableModel {
@@ -187,6 +200,7 @@ impl TableModel {
             custom_select_many: attrs.custom_select_many,
             custom_delete: attrs.custom_delete,
             custom_update: attrs.custom_update,
+            custom_upsert: attrs.custom_upsert,
         })
     }
 
@@ -318,6 +332,58 @@ impl TableModel {
 
     pub fn custom_update_methods(&self) -> darling::Result<Vec<CustomMethod<'_>>> {
         self.resolve_all(&self.custom_update)
+    }
+
+    /// The single field marked with the bare `#[table(upsert)]` flag, if
+    /// any — the conflict target for the default `insert()`/
+    /// `insert_many()`. `Ok(None)` if no field carries it (a plain
+    /// insert, no `ON CONFLICT` at all). Errors if *more than one* field
+    /// carries it, since a bare flag can't express whether several fields
+    /// are meant as one composite target or several independent ones —
+    /// use `#[table(upsert = method_name(field1, field2, ...))]` on the
+    /// struct for a composite target instead (see
+    /// [`custom_upsert_methods`]).
+    pub fn upsert_target(&self) -> darling::Result<Option<&Column>> {
+        let mut targets = self.columns.iter().filter(|c| c.is_upsert_target);
+        let Some(first) = targets.next() else {
+            return Ok(None);
+        };
+        if targets.next().is_some() {
+            return Err(darling::Error::custom(
+                "more than one field is marked `#[table(upsert)]` — for a composite conflict \
+                 target spanning multiple fields, use a struct-level `#[table(upsert = \
+                 method_name(field1, field2, ...))]` instead",
+            )
+            .with_span(&self.struct_name));
+        }
+        Ok(Some(first))
+    }
+
+    fn resolve_upsert(&self, spec: &UpsertSpec) -> darling::Result<CustomUpsert<'_>> {
+        let mut targets = Vec::with_capacity(spec.fields.len());
+        for field_ident in &spec.fields {
+            targets.push(self.find_column(&field_ident.to_string(), field_ident)?);
+        }
+        Ok(CustomUpsert {
+            method_name: spec.method_name.clone(),
+            targets,
+        })
+    }
+
+    /// The struct's named composite `ON CONFLICT` targets, from
+    /// `#[table(upsert = method_name(field1, field2, ...))]`. Each
+    /// generates its own additional method, alongside the default
+    /// `insert()`/`insert_many()` (see [`upsert_target`]).
+    pub fn custom_upsert_methods(&self) -> darling::Result<Vec<CustomUpsert<'_>>> {
+        let mut errors = darling::Error::accumulator();
+        let mut methods = Vec::with_capacity(self.custom_upsert.len());
+        for spec in &self.custom_upsert {
+            if let Some(method) = errors.handle(self.resolve_upsert(spec)) {
+                methods.push(method);
+            }
+        }
+        errors.finish()?;
+        Ok(methods)
     }
 }
 

@@ -11,9 +11,12 @@ pub fn expand(model: &TableModel) -> darling::Result<proc_macro2::TokenStream> {
     Ok(quote! {
         impl #struct_name {
             #[doc = #query]
-            pub async fn select_all(pool: &sqlx::PgPool) -> Result<Vec<#struct_name>, sqlx::Error> {
+            pub async fn select_all<'e, E>(executor: E) -> Result<Vec<#struct_name>, sqlx::Error>
+            where
+                E: sqlx::PgExecutor<'e>,
+            {
                 let object = sqlx::query_as!(#struct_name, #query)
-                    .fetch_all(pool)
+                    .fetch_all(executor)
                     .await?;
                 Ok(object)
             }

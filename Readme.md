@@ -12,22 +12,70 @@ couple of real bugs (field types with 0 or 2+ generic arguments used to be
 silently dropped during codegen; `SqlInsertMany` didn't actually batch-insert
 anything) and replaces `panic!`s with span-accurate compile errors.
 
-**Breaking change:** `#[table(name = users)]` (bare identifier) is no longer
-accepted — write `#[table(name = "users")]` instead. This is the only syntax
-change; `return_type = User`, `select = method(field1, field2)`,
-`as_type = "..."`, `spec_columns = "..."`, and `return_fields = "..."` are
-all unchanged. `SqlInsertMany` now does a real multi-row `INSERT ... VALUES
-(...), (...), ...` via `sqlx::QueryBuilder` instead of silently discarding
-the query result, and `#[table(update = name(fields))]` (multiple
-differently-filtered `update` methods per struct) is now supported — see
-[Insert many](#insert-many) and [Generate methods with many fields](#generate-methods-with-many-fields).
+**Breaking changes:**
+
+- `#[table(name = users)]` (bare identifier) is no longer accepted — write
+  `#[table(name = "users")]` instead.
+- `SqlUpdate` no longer generates a single default `update()` combining
+  every `#[table(update)]` field into one `WHERE` clause. Each
+  `#[table(update)]` field now generates its own `update_by_<field>` method
+  instead — same shape as `select_by_<field>`/`delete_by_<field>` — so
+  `data.update(conn)` becomes `data.update_by_id(conn)` (or whichever field
+  you marked). Two different `#[table(update)]` fields never combine into
+  one method anymore.
+
+Everything else — `return_type = User`, `select = method(field1, field2)`,
+`as_type = "..."`, `spec_columns = "..."`, `return_fields = "..."` — is
+unchanged.
+
+New in 0.2:
+
+- `SqlInsertMany` now does a real multi-row `INSERT ... VALUES (...),
+  (...), ...` via `sqlx::QueryBuilder`, instead of silently discarding the
+  query result — see [Insert many](#insert-many).
+- Upsert — `#[table(upsert)]` on a field generates `ON CONFLICT (...) DO
+  UPDATE`/`DO NOTHING` for `SqlInsert`/`SqlInsertMany`; a struct-level
+  `#[table(upsert = method_name(field1, field2, ...))]` generates an
+  additional method with a composite conflict target — see
+  [Upsert](#upsert).
+- Comparison operators — `#[table(op = "gt"|"lt"|"gte"|"lte"|"like"|"ilike"|
+  "in"|"not_in")]` on a filter field, single value or a list (one method
+  variant per operator) — see [Comparison operators](#comparison-operators).
+- Custom multi-field methods (`#[table(select = name(fields))]` and the
+  same for `select_many`/`update`/`delete`) can now also take a raw
+  `"$field"`-templated string instead of a plain field list, for `OR`/`NOT`/
+  anything beyond a plain `AND` of equalities — see
+  [Custom multi-field methods](#custom-multi-field-methods) and
+  [Generate methods with many fields](#generate-methods-with-many-fields).
+
+## 0.3.0 changes
+
+**Breaking change:**
+
+- Marking two or more fields bare `#[table(upsert)]` used to silently
+  combine them into one composite `ON CONFLICT (...)` target. That's now a
+  compile error — at most one field may carry the bare flag. For a
+  composite target spanning several columns, use the new struct-level
+  `#[table(upsert = method_name(field1, field2, ...))]` attribute instead,
+  which generates an *additional*, separately named method alongside the
+  always-present `insert()`/`insert_many()` — see [Upsert](#upsert).
+
+Also new in 0.3.0:
+
+- `SqlSelect`/`SqlSelectAll`/`SqlSelectMany` methods now take
+  `impl sqlx::PgExecutor<'_>` instead of a fixed `&sqlx::PgPool`. Not
+  breaking on its own — every existing call site passing `&pool` keeps
+  working — but now `&mut *tx` (inside a `sqlx::Transaction`) or `&mut conn`
+  (a bare `PgConnection`, e.g. from `pool.acquire()`) works too.
+  `SqlInsert`/`SqlInsertMany`/`SqlUpdate`/`SqlDelete` are unaffected (already
+  `&mut sqlx::PgConnection`, which a transaction already derefs to).
 
 ## Install
 
 ```toml
 # Cargo.toml
 [dependencies]
-sql-macros = { version = "0.2" }
+sql-macros = { version = "0.3" }
 ```
 
 ## Usage
@@ -51,6 +99,11 @@ If you need use special name use `#[table(name = "users")]`
 
 ## Select one
 
+Every `SqlSelect`/`SqlSelectAll`/`SqlSelectMany` method takes its first
+parameter as `impl sqlx::PgExecutor<'_>`, not a fixed `&sqlx::PgPool` — a
+plain `&pool` still works everywhere below, but so does `&mut *tx` inside a
+transaction, or `&mut conn` for a single connection.
+
 ```rust
 use sql_macros::SqlSelect;
 
@@ -73,9 +126,12 @@ pub async fn get_by_id(pool: &sqlx::PgPool, id: i32) -> Result<Option<User>, sql
 ```rust
 impl User {
     #[doc = "SELECT id, email FROM users WHERE id=$1"]
-    pub async fn select_by_id(pool: &sqlx::PgPool, id: i32) -> Result<Option<User>, sqlx::Error> {
+    pub async fn select_by_id<'e, E>(executor: E, id: i32) -> Result<Option<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(User, "SELECT id, email FROM users WHERE id=$1", id)
-            .fetch_optional(pool)
+            .fetch_optional(executor)
             .await?;
         Ok(object)
     }
@@ -106,9 +162,12 @@ pub async fn get_all_users(pool: &sqlx::PgPool) -> Result<Vec<User>, sqlx::Error
 ```rust
 impl User {
     #[doc = "SELECT id, email FROM users"]
-    pub async fn select_all(pool: &sqlx::PgPool) -> Result<Vec<User>, sqlx::Error> {
+    pub async fn select_all<'e, E>(executor: E) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(User, "SELECT id, email FROM users")
-            .fetch_all(pool)
+            .fetch_all(executor)
             .await?;
         Ok(object)
     }
@@ -141,16 +200,19 @@ pub async fn get_by_removed(pool: &sqlx::PgPool, is_removed: bool) -> Result<Vec
 ```rust
 impl User {
     #[doc = "SELECT id, email, is_removed FROM users WHERE is_removed=$1"]
-    pub async fn select_many_by_is_removed(
-        pool: &sqlx::PgPool,
+    pub async fn select_many_by_is_removed<'e, E>(
+        executor: E,
         is_removed: bool,
-    ) -> Result<Vec<User>, sqlx::Error> {
+    ) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(
             User,
             "SELECT id, email, is_removed FROM users WHERE is_removed=$1",
             is_removed
         )
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?;
         Ok(object)
     }
@@ -386,6 +448,46 @@ impl UpsertUser {
 `SqlInsertMany` supports the same `#[table(upsert)]` attribute; the
 `ON CONFLICT` clause is appended once, after the batch `VALUES (...), (...),
 ...` list, and applies to every row.
+
+At most one field may carry the bare `#[table(upsert)]` flag — marking two is
+a compile error, since there's no way to tell from two bare flags whether you
+mean a single composite conflict target or two independent ones. For a
+conflict target spanning more than one column, use a struct-level
+`#[table(upsert = method_name(field1, field2, ...))]` attribute instead. It
+generates an *additional*, separately named method — the plain `insert()`
+(or `insert_many()`) is still generated alongside it, since that method has
+no bare-marked field of its own:
+
+```rust
+use sql_macros::SqlInsert;
+
+#[derive(Debug, SqlInsert)]
+#[table(name = "user_todos", upsert = mark_done(user_id, todo_id))]
+pub struct MarkTodoDone {
+    pub user_id: i32,
+    pub todo_id: i32,
+    pub done: bool,
+}
+```
+
+<details>
+    <summary>View generated code</summary>
+
+```rust
+impl MarkTodoDone {
+    #[doc = "INSERT INTO user_todos (user_id, todo_id, done) VALUES ($1,$2,$3)"]
+    pub async fn insert(&self, conn: &mut sqlx::PgConnection) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+        // ...
+    }
+
+    #[doc = "INSERT INTO user_todos (user_id, todo_id, done) VALUES ($1,$2,$3) ON CONFLICT (user_id, todo_id) DO UPDATE SET done=EXCLUDED.done"]
+    pub async fn mark_done(&self, conn: &mut sqlx::PgConnection) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+        // ...
+    }
+}
+```
+
+</details>
 
 ## Update
 
@@ -687,9 +789,12 @@ pub async fn get_newer_than(pool: &sqlx::PgPool, id: i32) -> Result<Vec<User>, s
 ```rust
 impl User {
     #[doc = "SELECT email, id FROM users WHERE id>$1"]
-    pub async fn select_many_by_id_gt(pool: &sqlx::PgPool, id: i32) -> Result<Vec<User>, sqlx::Error> {
+    pub async fn select_many_by_id_gt<'e, E>(executor: E, id: i32) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(User, "SELECT email, id FROM users WHERE id>$1", id)
-            .fetch_all(pool)
+            .fetch_all(executor)
             .await?;
         Ok(object)
     }
@@ -721,17 +826,23 @@ pub struct User {
 ```rust
 impl User {
     #[doc = "SELECT email, id FROM users WHERE id>$1"]
-    pub async fn select_many_by_id_gt(pool: &sqlx::PgPool, id: i32) -> Result<Vec<User>, sqlx::Error> {
+    pub async fn select_many_by_id_gt<'e, E>(executor: E, id: i32) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(User, "SELECT email, id FROM users WHERE id>$1", id)
-            .fetch_all(pool)
+            .fetch_all(executor)
             .await?;
         Ok(object)
     }
 
     #[doc = "SELECT email, id FROM users WHERE id<$1"]
-    pub async fn select_many_by_id_lt(pool: &sqlx::PgPool, id: i32) -> Result<Vec<User>, sqlx::Error> {
+    pub async fn select_many_by_id_lt<'e, E>(executor: E, id: i32) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(User, "SELECT email, id FROM users WHERE id<$1", id)
-            .fetch_all(pool)
+            .fetch_all(executor)
             .await?;
         Ok(object)
     }
@@ -762,9 +873,12 @@ pub struct User {
 ```rust
 impl User {
     #[doc = "SELECT email, id FROM users WHERE id = ANY($1)"]
-    pub async fn select_many_by_id_in(pool: &sqlx::PgPool, id: &[i32]) -> Result<Vec<User>, sqlx::Error> {
+    pub async fn select_many_by_id_in<'e, E>(executor: E, id: &[i32]) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(User, "SELECT email, id FROM users WHERE id = ANY($1)", id)
-            .fetch_all(pool)
+            .fetch_all(executor)
             .await?;
         Ok(object)
     }
@@ -811,12 +925,15 @@ pub struct User {
 ```rust
 impl User {
     #[doc = "SELECT id, email, is_active, is_removed FROM users WHERE email=$1 OR (is_active=$2 AND NOT is_removed=$3)"]
-    pub async fn search_users(
-        pool: &sqlx::PgPool,
+    pub async fn search_users<'e, E>(
+        executor: E,
         email: String,
         is_active: bool,
         is_removed: bool,
-    ) -> Result<Vec<User>, sqlx::Error> {
+    ) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(
             User,
             "SELECT id, email, is_active, is_removed FROM users WHERE email=$1 OR (is_active=$2 AND NOT is_removed=$3)",
@@ -824,7 +941,7 @@ impl User {
             is_active,
             is_removed
         )
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?;
         Ok(object)
     }
@@ -870,13 +987,16 @@ pub async fn get_by_id(pool: &sqlx::PgPool, id: i32) -> Result<Option<User>, sql
 ```rust
 impl User {
     #[doc = "SELECT id, email, role AS \"role!: Role\" FROM users WHERE id=$1"]
-    pub async fn select_by_id(pool: &sqlx::PgPool, id: i32) -> Result<Option<User>, sqlx::Error> {
+    pub async fn select_by_id<'e, E>(executor: E, id: i32) -> Result<Option<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(
             User,
             "SELECT id, email, role AS \"role!: Role\" FROM users WHERE id=$1",
             id
         )
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await?;
         Ok(object)
     }

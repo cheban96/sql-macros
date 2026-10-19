@@ -16,13 +16,16 @@ fn generate_method(
 
     quote! {
         #[doc = #query]
-        pub async fn #method_name(pool: &sqlx::PgPool, #params) -> Result<Vec<#struct_name>, sqlx::Error> {
+        pub async fn #method_name<'e, E>(executor: E, #params) -> Result<Vec<#struct_name>, sqlx::Error>
+        where
+            E: sqlx::PgExecutor<'e>,
+        {
             let object = sqlx::query_as!(
                 #struct_name,
                 #query,
                 #(#idents),*
             )
-            .fetch_all(pool)
+            .fetch_all(executor)
             .await?;
             Ok(object)
         }

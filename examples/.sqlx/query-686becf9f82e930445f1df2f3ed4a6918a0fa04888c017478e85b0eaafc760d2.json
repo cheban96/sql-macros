@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO user_todos (user_id, todo_id, done) VALUES ($1,$2,$3) ON CONFLICT (user_id, todo_id) DO UPDATE SET done=EXCLUDED.done",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "686becf9f82e930445f1df2f3ed4a6918a0fa04888c017478e85b0eaafc760d2"
+}

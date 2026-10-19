@@ -7,14 +7,14 @@ own.
 
 | File | Demonstrates |
 | --- | --- |
-| [`select.rs`](examples/select.rs) | `SqlSelect`, `#[table(select)]`, custom multi-field `select = name(fields)`, `as_type` for enum columns |
+| [`select.rs`](examples/select.rs) | `SqlSelect`, `#[table(select)]`, custom multi-field `select = name(fields)`, `as_type` for enum columns, calling a generated method with `&pool` vs. `&mut *tx` (generic over `sqlx::PgExecutor`) |
 | [`select_all.rs`](examples/select_all.rs) | `SqlSelectAll` |
 | [`select_many.rs`](examples/select_many.rs) | `SqlSelectMany`, `#[table(select_many)]`, custom multi-field `select_many = name(fields)` |
 | [`insert.rs`](examples/insert.rs) | `SqlInsert` — no `return_type`, `return_type` + `return_fields`, single-field `return_fields`, enum bind via `as_type`, enum `RETURNING` via a type override in `return_fields` |
 | [`insert_many.rs`](examples/insert_many.rs) | `SqlInsertMany` (batch insert via `sqlx::QueryBuilder`) |
 | [`update.rs`](examples/update.rs) | `SqlUpdate`, `#[table(update)]`, `spec_columns`, custom `update = name(fields)` |
 | [`delete.rs`](examples/delete.rs) | `SqlDelete`, `#[table(delete)]`, custom multi-field `delete = name(fields)` |
-| [`upsert.rs`](examples/upsert.rs) | Field-level `#[table(upsert)]` — `ON CONFLICT (...) DO UPDATE` for `SqlInsert`/`SqlInsertMany` |
+| [`upsert.rs`](examples/upsert.rs) | Field-level `#[table(upsert)]` and struct-level `#[table(upsert = method_name(...))]` — single-column and composite `ON CONFLICT (...) DO UPDATE` for `SqlInsert`/`SqlInsertMany` |
 | [`operators.rs`](examples/operators.rs) | `#[table(op = "...")]` (single or a list, e.g. `["gt", "lt"]`) — `gt`/`lt`/`gte`/`lte`/`like`/`ilike`/`in`/`not_in` for a field's own single-field methods; a list generates one method variant per operator |
 | [`raw_filter.rs`](examples/raw_filter.rs) | Raw `"$field"`-templated custom method (`select_many`/`update`) — `$field` is just the bound-value placeholder, the rest (`OR`/`AND`/`NOT`/arbitrary SQL) is written by hand; custom methods never read `op` |
 | [`table_naming.rs`](examples/table_naming.rs) | Default table name derivation (`UserTodo` -> `user_todos`) vs. `#[table(name = "...")]`, `SqlTable` |

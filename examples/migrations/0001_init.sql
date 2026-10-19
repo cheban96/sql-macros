@@ -16,5 +16,9 @@ CREATE TABLE users (
 CREATE TABLE user_todos (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users (id),
-    todo_id INTEGER NOT NULL
+    todo_id INTEGER NOT NULL,
+    done BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Composite unique constraint, so `examples/upsert.rs` can demonstrate
+    -- `#[table(upsert = method_name(user_id, todo_id))]`.
+    UNIQUE (user_id, todo_id)
 );

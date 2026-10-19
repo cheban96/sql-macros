@@ -104,6 +104,65 @@ impl FromMeta for MethodSpec {
     }
 }
 
+/// `method_name(field1, field2, ...)` — the value side of `#[table(upsert =
+/// insert_or_update_member(org_id, user_id))]`. Always a plain field list
+/// (no raw-template form, unlike [`MethodSpec`] — a conflict target is just
+/// a list of column names, there's no comparison/condition to write), and
+/// always at least two fields: a single field's conflict target is what the
+/// bare `#[table(upsert)]` flag on that field is for; this attribute exists
+/// specifically for a *composite* target spanning more than one field.
+#[derive(Debug, Clone)]
+pub struct UpsertSpec {
+    pub method_name: syn::Ident,
+    pub fields: Vec<syn::Ident>,
+}
+
+impl FromMeta for UpsertSpec {
+    fn from_expr(expr: &syn::Expr) -> darling::Result<Self> {
+        let syn::Expr::Call(call) = expr else {
+            return Err(
+                Error::custom("expected `method_name(field1, field2, ...)`").with_span(expr)
+            );
+        };
+
+        let syn::Expr::Path(func_path) = call.func.as_ref() else {
+            return Err(Error::custom("expected a method name here").with_span(&call.func));
+        };
+        let method_name = func_path
+            .path
+            .get_ident()
+            .ok_or_else(|| {
+                Error::custom("method name must be a plain identifier").with_span(func_path)
+            })?
+            .clone();
+
+        let fields = call
+            .args
+            .iter()
+            .map(|arg| {
+                let syn::Expr::Path(field_path) = arg else {
+                    return Err(Error::custom("expected a field name").with_span(arg));
+                };
+                field_path.path.get_ident().cloned().ok_or_else(|| {
+                    Error::custom("field name must be a plain identifier").with_span(field_path)
+                })
+            })
+            .collect::<darling::Result<Vec<_>>>()?;
+
+        if fields.len() < 2 {
+            return Err(Error::custom(
+                "expected at least two field names — for a single field, use `#[table(upsert)]` on that field directly instead",
+            )
+            .with_span(call));
+        }
+
+        Ok(UpsertSpec {
+            method_name,
+            fields,
+        })
+    }
+}
+
 /// A string that must be given as a quoted literal (`name = "users"`), with a
 /// friendly, span-accurate error if someone writes a bare identifier instead
 /// (the most common mistake coming from the old 0.1 syntax).
@@ -261,9 +320,13 @@ pub struct FieldAttrs {
     pub update: util::Flag,
     #[darling(default)]
     pub delete: util::Flag,
-    /// Marks this field as part of the `ON CONFLICT (...)` target for
-    /// `SqlInsert`/`SqlInsertMany`. Every other field becomes a
-    /// `DO UPDATE SET col = EXCLUDED.col` assignment.
+    /// Marks this field as *the* `ON CONFLICT (...)` target for
+    /// `SqlInsert`/`SqlInsertMany`'s default `insert()`/`insert_many()`
+    /// method — every other field becomes a `DO UPDATE SET col =
+    /// EXCLUDED.col` assignment. At most one field per struct may carry
+    /// this; for a composite target spanning more than one field, use a
+    /// struct-level `#[table(upsert = method_name(field1, field2, ...))]`
+    /// instead, which generates an additional, separately named method.
     #[darling(default)]
     pub upsert: util::Flag,
 
@@ -297,4 +360,6 @@ pub struct TableAttrs {
     pub custom_delete: Vec<MethodSpec>,
     #[darling(default, multiple, rename = "update")]
     pub custom_update: Vec<MethodSpec>,
+    #[darling(default, multiple, rename = "upsert")]
+    pub custom_upsert: Vec<UpsertSpec>,
 }
