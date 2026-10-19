@@ -1,8 +1,10 @@
 //! `SqlDelete`: one generated `delete_by_<field>` method per field marked
 //! `#[table(delete)]`, plus optional multi-field custom methods.
+//!
+//! Generic over `sqlx::PgExecutor<'_>`, same as `SqlSelect`/`SqlInsert`/
+//! `SqlUpdate` — `&pool` works directly.
 
 use sql_macros::SqlDelete;
-use sqlx::Connection;
 
 #[derive(Debug, SqlDelete)]
 #[table(name = "users")]
@@ -16,12 +18,12 @@ pub struct User {
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
-    let mut conn = sqlx::PgConnection::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
 
-    let rows_affected = User::delete_by_id(&mut conn, 1).await?.rows_affected();
+    let rows_affected = User::delete_by_id(&pool, 1).await?.rows_affected();
     println!("{rows_affected}");
 
-    let rows_affected = User::delete_inactive(&mut conn, false, true)
+    let rows_affected = User::delete_inactive(&pool, false, true)
         .await?
         .rows_affected();
     println!("{rows_affected}");

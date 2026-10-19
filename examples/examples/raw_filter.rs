@@ -8,7 +8,6 @@
 //! themselves.
 
 use sql_macros::{SqlSelectMany, SqlUpdate};
-use sqlx::Connection;
 
 #[derive(Debug, SqlSelectMany)]
 #[table(name = "users")]
@@ -49,13 +48,12 @@ async fn main() -> Result<(), sqlx::Error> {
 
     // Generated as:
     // "UPDATE users SET email=$1 WHERE id=$2 AND is_removed=$3"
-    let mut conn = sqlx::PgConnection::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
     let data = RestoreUser {
         email: "restored@example.com".into(),
         id: 1,
         is_removed: true,
     };
-    let rows_affected = data.restore_by_id_if_removed(&mut conn).await?.rows_affected();
+    let rows_affected = data.restore_by_id_if_removed(&pool).await?.rows_affected();
     println!("{rows_affected}");
 
     Ok(())

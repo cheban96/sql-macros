@@ -49,10 +49,13 @@ fn generate_method(
         );
         quote! {
             #[doc = #doc]
-            pub async fn #method_name(
+            pub async fn #method_name<'e, E>(
                 items: &[Self],
-                conn: &mut sqlx::PgConnection,
-            ) -> Result<Vec<#return_type>, sqlx::Error> {
+                executor: E,
+            ) -> Result<Vec<#return_type>, sqlx::Error>
+            where
+                E: sqlx::PgExecutor<'e>,
+            {
                 if items.is_empty() {
                     return Ok(Vec::new());
                 }
@@ -66,7 +69,7 @@ fn generate_method(
 
                 let objects = builder
                     .build_query_as::<#return_type>()
-                    .fetch_all(&mut *conn)
+                    .fetch_all(executor)
                     .await?;
                 Ok(objects)
             }
@@ -77,10 +80,13 @@ fn generate_method(
         );
         quote! {
             #[doc = #doc]
-            pub async fn #method_name(
+            pub async fn #method_name<'e, E>(
                 items: &[Self],
-                conn: &mut sqlx::PgConnection,
-            ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+                executor: E,
+            ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+            where
+                E: sqlx::PgExecutor<'e>,
+            {
                 if items.is_empty() {
                     return Ok(Default::default());
                 }
@@ -91,7 +97,7 @@ fn generate_method(
                 });
                 #push_upsert
 
-                let result = builder.build().execute(&mut *conn).await?;
+                let result = builder.build().execute(executor).await?;
                 Ok(result.into())
             }
         }
@@ -198,7 +204,7 @@ mod tests {
         });
         let model = TableModel::from_derive_input(&input).unwrap();
         let tokens = expand(&model).unwrap().to_string();
-        assert!(tokens.contains("fn insert_many ("));
+        assert!(tokens.contains("fn insert_many <"));
         assert!(tokens.contains("fn insert_or_update_members"));
         assert!(tokens.contains("ON CONFLICT (org_id, user_id) DO UPDATE SET role=EXCLUDED.role"));
     }

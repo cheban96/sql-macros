@@ -11,7 +11,6 @@
 //! which adds an *extra* method alongside the always-present `insert()`.
 
 use sql_macros::{SqlInsert, SqlInsertMany};
-use sqlx::Connection;
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct User {
@@ -29,17 +28,20 @@ pub struct UpsertUser {
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
-    let mut conn = sqlx::PgConnection::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
 
     // Generated as:
     // "INSERT INTO users (email, is_active) VALUES ($1,$2)
     //  ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active
     //  RETURNING id, email"
+    //
+    // `&pool` works directly — `SqlInsert`/`SqlInsertMany` are generic over
+    // `sqlx::PgExecutor<'_>`, same as every other derive here.
     let user = UpsertUser {
         email: "a@example.com".into(),
         is_active: true,
     }
-    .insert(&mut conn)
+    .insert(&pool)
     .await?;
     println!("{user:?}");
 
@@ -54,11 +56,11 @@ async fn main() -> Result<(), sqlx::Error> {
             is_active: true,
         },
     ];
-    let users = UpsertUser::insert_many(&items, &mut conn).await?;
+    let users = UpsertUser::insert_many(&items, &pool).await?;
     println!("{users:?}");
 
     // Composite conflict target: seed the user this row references.
-    let user_id = user_todo_owner(&mut conn, "todo-owner@example.com").await?;
+    let user_id = user_todo_owner(&pool, "todo-owner@example.com").await?;
     let mark = MarkTodoDone {
         user_id,
         todo_id: 1,
@@ -72,7 +74,7 @@ async fn main() -> Result<(), sqlx::Error> {
     // `mark_done` is *additional* — `MarkTodoDone` also still has a plain
     // `insert()` (no `ON CONFLICT` at all), since no field here carries the
     // bare `#[table(upsert)]` flag.
-    let rows_affected = mark.mark_done(&mut conn).await?.rows_affected();
+    let rows_affected = mark.mark_done(&pool).await?.rows_affected();
     println!("{rows_affected}");
 
     Ok(())
@@ -81,12 +83,12 @@ async fn main() -> Result<(), sqlx::Error> {
 /// Inserts (or reuses) a user by email and returns their id, so the
 /// `MarkTodoDone` example below has a real `user_id`/`todo_id` pair to
 /// upsert against.
-async fn user_todo_owner(conn: &mut sqlx::PgConnection, email: &str) -> Result<i32, sqlx::Error> {
+async fn user_todo_owner(pool: &sqlx::PgPool, email: &str) -> Result<i32, sqlx::Error> {
     let user = UpsertUser {
         email: email.into(),
         is_active: true,
     }
-    .insert(conn)
+    .insert(pool)
     .await?;
     Ok(user.id)
 }

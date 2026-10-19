@@ -1,9 +1,10 @@
 //! `SqlInsertMany`: batch insert built at runtime with `sqlx::QueryBuilder`
 //! (a static `sqlx::query!` can't express a variable number of rows), with
-//! the same `return_type`/`return_fields` options as `SqlInsert`.
+//! the same `return_type`/`return_fields` options as `SqlInsert`. Generic
+//! over `sqlx::PgExecutor<'_>`, same as `SqlInsert` — `&pool` works
+//! directly.
 
 use sql_macros::SqlInsertMany;
-use sqlx::Connection;
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct User {
@@ -19,7 +20,7 @@ pub struct CreateUser {
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
-    let mut conn = sqlx::PgConnection::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
 
     // `email` is `UNIQUE`; clean up so this example can be run more than
     // once against the same database.
@@ -28,7 +29,7 @@ async fn main() -> Result<(), sqlx::Error> {
         "insert-many-a@example.com",
         "insert-many-b@example.com",
     )
-    .execute(&mut conn)
+    .execute(&pool)
     .await?;
 
     let items = vec![
@@ -39,7 +40,7 @@ async fn main() -> Result<(), sqlx::Error> {
             email: "insert-many-b@example.com".into(),
         },
     ];
-    let users = CreateUser::insert_many(&items, &mut conn).await?;
+    let users = CreateUser::insert_many(&items, &pool).await?;
     println!("{users:?}");
 
     Ok(())

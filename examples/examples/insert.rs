@@ -1,5 +1,5 @@
-//! `SqlInsert`: a single-row `insert(&self, conn)` method. Three flavors,
-//! selected by which attributes are present:
+//! `SqlInsert`: a single-row `insert(&self, executor)` method. Three
+//! flavors, selected by which attributes are present:
 //! - no `return_type` -> returns `sqlx::any::AnyQueryResult`
 //! - `return_type = User` -> `RETURNING *`, fetched into `User`
 //! - `return_type = ... , return_fields = "id"` -> `RETURNING id` only
@@ -14,9 +14,12 @@
 //! `UserWithRole`'s own fields, only its type name) — write the `AS "col!:
 //! Type"` override into `return_fields` yourself; see
 //! `CreateUserReturningRole` below and the README's "Attention" section.
+//!
+//! Like `SqlSelect`/`SqlSelectAll`/`SqlSelectMany`, the generated method is
+//! generic over `sqlx::PgExecutor<'_>` — `&pool` works directly (below),
+//! and so does `&mut *tx`/`&mut conn`.
 
 use sql_macros::SqlInsert;
-use sqlx::Connection;
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct User {
@@ -89,7 +92,7 @@ pub struct CreateUserReturningId {
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
-    let mut conn = sqlx::PgConnection::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
 
     // `email` is `UNIQUE`; clean up so this example can be run more than
     // once against the same database.
@@ -101,14 +104,15 @@ async fn main() -> Result<(), sqlx::Error> {
         "insert-role@example.com",
         "insert-role-returning@example.com",
     )
-    .execute(&mut conn)
+    .execute(&pool)
     .await?;
 
+    // `&pool` works directly — no need to acquire a connection first.
     let rows_affected = CreateUserWithRole {
         email: "insert-role@example.com".into(),
         role: Role::Admin,
     }
-    .insert(&mut conn)
+    .insert(&pool)
     .await?
     .rows_affected();
     println!("{rows_affected}");
@@ -116,14 +120,14 @@ async fn main() -> Result<(), sqlx::Error> {
     let user = CreateUserReturningRole {
         email: "insert-role-returning@example.com".into(),
     }
-    .insert(&mut conn)
+    .insert(&pool)
     .await?;
     println!("{user:?}");
 
     let rows_affected = CreateUser {
         email: "insert-a@example.com".into(),
     }
-    .insert(&mut conn)
+    .insert(&pool)
     .await?
     .rows_affected();
     println!("{rows_affected}");
@@ -131,14 +135,14 @@ async fn main() -> Result<(), sqlx::Error> {
     let user = CreateUserReturning {
         email: "insert-b@example.com".into(),
     }
-    .insert(&mut conn)
+    .insert(&pool)
     .await?;
     println!("{user:?}");
 
     let created_id = CreateUserReturningId {
         email: "insert-c@example.com".into(),
     }
-    .insert(&mut conn)
+    .insert(&pool)
     .await?;
     println!("{created_id:?}");
 

@@ -50,14 +50,17 @@ fn generate_method(spec: GenerateMethodArgs) -> darling::Result<proc_macro2::Tok
         let query = format!("{query} RETURNING {returning}");
         quote! {
             #[doc = #query]
-            pub async fn #method_name(&self, conn: &mut sqlx::PgConnection) -> Result<#return_type, sqlx::Error> {
+            pub async fn #method_name<'e, E>(&self, executor: E) -> Result<#return_type, sqlx::Error>
+            where
+                E: sqlx::PgExecutor<'e>,
+            {
                 let object = sqlx::query_as!(
                     #return_type,
                     #query,
                     #column_bind_args,
                     #filter_bind_args
                 )
-                .fetch_one(&mut *conn)
+                .fetch_one(executor)
                 .await?;
                 Ok(object)
             }
@@ -65,13 +68,16 @@ fn generate_method(spec: GenerateMethodArgs) -> darling::Result<proc_macro2::Tok
     } else {
         quote! {
             #[doc = #query]
-            pub async fn #method_name(&self, conn: &mut sqlx::PgConnection) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+            pub async fn #method_name<'e, E>(&self, executor: E) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+            where
+                E: sqlx::PgExecutor<'e>,
+            {
                 let result = sqlx::query!(
                     #query,
                     #column_bind_args,
                     #filter_bind_args
                 )
-                .execute(&mut *conn)
+                .execute(executor)
                 .await?;
                 Ok(result.into())
             }

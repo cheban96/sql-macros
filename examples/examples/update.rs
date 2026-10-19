@@ -6,9 +6,11 @@
 //! the `SET` clause (e.g. `updated_at = NOW()`), and
 //! `#[table(update = method_name(field, ...))]` generates additional,
 //! differently-filtered update methods on the same struct.
+//!
+//! Generic over `sqlx::PgExecutor<'_>`, same as `SqlSelect`/`SqlInsert` —
+//! `&pool` works directly.
 
 use sql_macros::SqlUpdate;
-use sqlx::Connection;
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct User {
@@ -33,7 +35,7 @@ pub struct UpdateUser {
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
-    let mut conn = sqlx::PgConnection::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL").unwrap()).await?;
 
     let data = UpdateUser {
         id: 1,
@@ -43,11 +45,11 @@ async fn main() -> Result<(), sqlx::Error> {
 
     // `update_by_id`: filters on `id` (marked `#[table(update)]`), sets
     // `email`, `is_active`, plus `updated_at=NOW()` from `spec_columns`.
-    let user = data.update_by_id(&mut conn).await?;
+    let user = data.update_by_id(&pool).await?;
     println!("{user:?}");
 
     // `update_by_email`: filters on `email` instead, sets `id`, `is_active`.
-    let user = data.update_by_email(&mut conn).await?;
+    let user = data.update_by_email(&pool).await?;
     println!("{user:?}");
 
     Ok(())

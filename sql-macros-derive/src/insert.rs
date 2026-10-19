@@ -1,4 +1,4 @@
-//! `SqlInsert`: a single-row `insert(&self, conn)` method, always generated.
+//! `SqlInsert`: a single-row `insert(&self, executor)` method, always generated.
 //! A single field marked bare `#[table(upsert)]` makes it the `ON CONFLICT
 //! (...)` target for that method — every other field becomes a `DO UPDATE
 //! SET col = EXCLUDED.col` assignment (or `DO NOTHING` if every field is
@@ -51,14 +51,16 @@ fn generate_method(
         let query = format!("{query} RETURNING {returning}");
         quote! {
             #[doc = #query]
-            pub async fn #method_name(&self, conn: &mut sqlx::PgConnection) -> Result<#return_type, sqlx::Error>
+            pub async fn #method_name<'e, E>(&self, executor: E) -> Result<#return_type, sqlx::Error>
+            where
+                E: sqlx::PgExecutor<'e>,
             {
                 let object = sqlx::query_as!(
                     #return_type,
                     #query,
                     #bind_args
                 )
-                .fetch_one(&mut *conn)
+                .fetch_one(executor)
                 .await?;
                 Ok(object)
             }
@@ -66,13 +68,15 @@ fn generate_method(
     } else {
         quote! {
             #[doc = #query]
-            pub async fn #method_name(&self, conn: &mut sqlx::PgConnection) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+            pub async fn #method_name<'e, E>(&self, executor: E) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+            where
+                E: sqlx::PgExecutor<'e>,
             {
                 let query_result = sqlx::query!(
                     #query,
                     #bind_args
                 )
-                .execute(&mut *conn)
+                .execute(executor)
                 .await?;
                 Ok(query_result.into())
             }
@@ -252,7 +256,7 @@ mod tests {
         let tokens = expand(&model).unwrap().to_string();
         // The plain `insert()` is still generated (no bare-marked field),
         // alongside the composite-conflict named method.
-        assert!(tokens.contains("fn insert ("));
+        assert!(tokens.contains("fn insert <"));
         assert!(tokens.contains("fn insert_or_update_member"));
         assert!(tokens.contains("ON CONFLICT (org_id, user_id) DO UPDATE SET role=EXCLUDED.role"));
     }

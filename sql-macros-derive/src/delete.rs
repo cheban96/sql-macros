@@ -14,15 +14,18 @@ fn generate_method(
 
     quote! {
         #[doc = #query]
-        pub async fn #method_name(
-            conn: &mut sqlx::PgConnection,
+        pub async fn #method_name<'e, E>(
+            executor: E,
             #params
-        ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+        ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+        where
+            E: sqlx::PgExecutor<'e>,
+        {
             let result = sqlx::query!(
                 #query,
                 #(#idents),*
             )
-            .execute(&mut *conn)
+            .execute(executor)
             .await?;
             Ok(result.into())
         }

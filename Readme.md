@@ -62,20 +62,27 @@ New in 0.2:
 
 Also new in 0.3.0:
 
-- `SqlSelect`/`SqlSelectAll`/`SqlSelectMany` methods now take
+- `SqlSelect`/`SqlSelectAll`/`SqlSelectMany` methods take
   `impl sqlx::PgExecutor<'_>` instead of a fixed `&sqlx::PgPool`. Not
-  breaking on its own — every existing call site passing `&pool` keeps
-  working — but now `&mut *tx` (inside a `sqlx::Transaction`) or `&mut conn`
-  (a bare `PgConnection`, e.g. from `pool.acquire()`) works too.
-  `SqlInsert`/`SqlInsertMany`/`SqlUpdate`/`SqlDelete` are unaffected (already
-  `&mut sqlx::PgConnection`, which a transaction already derefs to).
+  breaking — every existing call site passing `&pool` keeps working — but
+  now `&mut *tx` (inside a `sqlx::Transaction`) or `&mut conn` (a bare
+  `PgConnection`, e.g. from `pool.acquire()`) works too.
+
+## 0.3.1 changes
+
+`SqlInsert`/`SqlInsertMany`/`SqlUpdate`/`SqlDelete` methods now also take
+`impl sqlx::PgExecutor<'_>`, same as the select-side derives got in 0.3.0.
+Not breaking — `&mut conn`/`&mut *tx` call sites keep working — but these
+write-side methods, which used to require `&mut sqlx::PgConnection`
+specifically, now also accept `&pool` directly, without pre-acquiring a
+connection first.
 
 ## Install
 
 ```toml
 # Cargo.toml
 [dependencies]
-sql-macros = { version = "0.3" }
+sql-macros = { version = "0.3.1" }
 ```
 
 ## Usage
@@ -234,8 +241,8 @@ pub struct CreateUser {
     pub email: String,
 }
 
-pub async fn create(conn: &mut sqlx::PgConnection, data: &CreateUser) -> Result<u64, sqlx::Error> {
-    let query_result = data.insert(conn).await?;
+pub async fn create(pool: &sqlx::PgPool, data: &CreateUser) -> Result<u64, sqlx::Error> {
+    let query_result = data.insert(pool).await?;
     Ok(query_result.rows_affected())
 }
 ```
@@ -246,12 +253,15 @@ pub async fn create(conn: &mut sqlx::PgConnection, data: &CreateUser) -> Result<
 ```rust
 impl CreateUser {
     #[doc = "INSERT INTO users (email) VALUES ($1)"]
-    pub async fn insert(
+    pub async fn insert<'e, E>(
         &self,
-        conn: &mut sqlx::PgConnection,
-    ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+        executor: E,
+    ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let query_result = sqlx::query!("INSERT INTO users (email) VALUES ($1)", &self.email)
-            .execute(&mut *conn)
+            .execute(executor)
             .await?;
         Ok(query_result.into())
     }
@@ -271,8 +281,8 @@ pub struct CreateUser {
     pub email: String,
 }
 
-pub async fn create(conn: &mut sqlx::PgConnection, data: &CreateUser) -> Result<User, sqlx::Error> {
-    let user = data.insert(conn).await?;
+pub async fn create(pool: &sqlx::PgPool, data: &CreateUser) -> Result<User, sqlx::Error> {
+    let user = data.insert(pool).await?;
     Ok(user)
 }
 ```
@@ -283,13 +293,16 @@ pub async fn create(conn: &mut sqlx::PgConnection, data: &CreateUser) -> Result<
 ```rust
 impl CreateUser {
     #[doc = "INSERT INTO users (email) VALUES ($1) RETURNING *"]
-    pub async fn insert(&self, conn: &mut sqlx::PgConnection) -> Result<User, sqlx::Error> {
+    pub async fn insert<'e, E>(&self, executor: E) -> Result<User, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(
             User,
             "INSERT INTO users (email) VALUES ($1) RETURNING *",
             &self.email
         )
-        .fetch_one(&mut *conn)
+        .fetch_one(executor)
         .await?;
         Ok(object)
     }
@@ -315,8 +328,8 @@ pub struct CreateUser {
     pub email: String,
 }
 
-pub async fn create(conn: &mut sqlx::PgConnection, data: &CreateUser) -> Result<CreateUserResponse, sqlx::Error> {
-    let user = data.insert(conn).await?;
+pub async fn create(pool: &sqlx::PgPool, data: &CreateUser) -> Result<CreateUserResponse, sqlx::Error> {
+    let user = data.insert(pool).await?;
     Ok(user)
 }
 ```
@@ -327,13 +340,16 @@ pub async fn create(conn: &mut sqlx::PgConnection, data: &CreateUser) -> Result<
 ```rust
 impl CreateUser {
     #[doc = "INSERT INTO users (email) VALUES ($1) RETURNING id"]
-    pub async fn insert(&self, conn: &mut sqlx::PgConnection) -> Result<CreateUserResponse, sqlx::Error> {
+    pub async fn insert<'e, E>(&self, executor: E) -> Result<CreateUserResponse, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(
             CreateUserResponse,
             "INSERT INTO users (email) VALUES ($1) RETURNING id",
             &self.email
         )
-        .fetch_one(&mut *conn)
+        .fetch_one(executor)
         .await?;
         Ok(object)
     }
@@ -359,8 +375,8 @@ pub struct CreateUser {
     pub email: String,
 }
 
-pub async fn create_many(conn: &mut sqlx::PgConnection, data: &[CreateUser]) -> Result<Vec<User>, sqlx::Error> {
-    let users = CreateUser::insert_many(data, conn).await?;
+pub async fn create_many(pool: &sqlx::PgPool, data: &[CreateUser]) -> Result<Vec<User>, sqlx::Error> {
+    let users = CreateUser::insert_many(data, pool).await?;
     Ok(users)
 }
 ```
@@ -371,10 +387,13 @@ pub async fn create_many(conn: &mut sqlx::PgConnection, data: &[CreateUser]) -> 
 ```rust
 impl CreateUser {
     #[doc = "INSERT INTO users (email) VALUES (...), (...), ... RETURNING *"]
-    pub async fn insert_many(
+    pub async fn insert_many<'e, E>(
         items: &[Self],
-        conn: &mut sqlx::PgConnection,
-    ) -> Result<Vec<User>, sqlx::Error> {
+        executor: E,
+    ) -> Result<Vec<User>, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         if items.is_empty() {
             return Ok(Vec::new());
         }
@@ -387,7 +406,7 @@ impl CreateUser {
 
         let objects = builder
             .build_query_as::<User>()
-            .fetch_all(&mut *conn)
+            .fetch_all(executor)
             .await?;
         Ok(objects)
     }
@@ -417,8 +436,8 @@ pub struct UpsertUser {
     pub is_active: bool,
 }
 
-pub async fn upsert(conn: &mut sqlx::PgConnection, data: &UpsertUser) -> Result<User, sqlx::Error> {
-    let user = data.insert(conn).await?;
+pub async fn upsert(pool: &sqlx::PgPool, data: &UpsertUser) -> Result<User, sqlx::Error> {
+    let user = data.insert(pool).await?;
     Ok(user)
 }
 ```
@@ -429,14 +448,17 @@ pub async fn upsert(conn: &mut sqlx::PgConnection, data: &UpsertUser) -> Result<
 ```rust
 impl UpsertUser {
     #[doc = "INSERT INTO users (email, is_active) VALUES ($1,$2) ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active RETURNING *"]
-    pub async fn insert(&self, conn: &mut sqlx::PgConnection) -> Result<User, sqlx::Error> {
+    pub async fn insert<'e, E>(&self, executor: E) -> Result<User, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let object = sqlx::query_as!(
             User,
             "INSERT INTO users (email, is_active) VALUES ($1,$2) ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active RETURNING *",
             &self.email as _,
             &self.is_active as _
         )
-        .fetch_one(&mut *conn)
+        .fetch_one(executor)
         .await?;
         Ok(object)
     }
@@ -476,12 +498,18 @@ pub struct MarkTodoDone {
 ```rust
 impl MarkTodoDone {
     #[doc = "INSERT INTO user_todos (user_id, todo_id, done) VALUES ($1,$2,$3)"]
-    pub async fn insert(&self, conn: &mut sqlx::PgConnection) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+    pub async fn insert<'e, E>(&self, executor: E) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         // ...
     }
 
     #[doc = "INSERT INTO user_todos (user_id, todo_id, done) VALUES ($1,$2,$3) ON CONFLICT (user_id, todo_id) DO UPDATE SET done=EXCLUDED.done"]
-    pub async fn mark_done(&self, conn: &mut sqlx::PgConnection) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+    pub async fn mark_done<'e, E>(&self, executor: E) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         // ...
     }
 }
@@ -506,8 +534,8 @@ pub struct UpdateUser {
     pub email: String,
 }
 
-pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<u64, sqlx::Error> {
-    let query_result = data.update_by_id(conn).await?;
+pub async fn update(pool: &sqlx::PgPool, data: &UpdateUser) -> Result<u64, sqlx::Error> {
+    let query_result = data.update_by_id(pool).await?;
     Ok(query_result.rows_affected())
 }
 ```
@@ -518,16 +546,19 @@ pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<
 ```rust
 impl UpdateUser {
     #[doc = "UPDATE users SET email=$1 WHERE id=$2"]
-    pub async fn update_by_id(
+    pub async fn update_by_id<'e, E>(
         &self,
-        conn: &mut sqlx::PgConnection,
-    ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+        executor: E,
+    ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query!(
             "UPDATE users SET email=$1 WHERE id=$2",
            &self.email,
            &self.id
        )
-       .execute(&mut *conn)
+       .execute(executor)
        .await?;
        Ok(result.into())
    }
@@ -549,8 +580,8 @@ pub struct UpdateUser {
     pub email: String,
 }
 
-pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<User, sqlx::Error> {
-    let user = data.update_by_id(conn).await?;
+pub async fn update(pool: &sqlx::PgPool, data: &UpdateUser) -> Result<User, sqlx::Error> {
+    let user = data.update_by_id(pool).await?;
     Ok(user)
 }
 ```
@@ -561,14 +592,17 @@ pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<
 ```rust
 impl UpdateUser {
    #[doc = "UPDATE users SET email=$1 WHERE id=$2 RETURNING *"]
-   pub async fn update_by_id(&self, conn: &mut sqlx::PgConnection) -> Result<User, sqlx::Error> {
+   pub async fn update_by_id<'e, E>(&self, executor: E) -> Result<User, sqlx::Error>
+   where
+       E: sqlx::PgExecutor<'e>,
+   {
        let object = sqlx::query_as!(
            User,
            "UPDATE users SET email=$1 WHERE id=$2 RETURNING *",
             &self.email,
             &self.id
         )
-        .fetch_one(&mut *conn)
+        .fetch_one(executor)
         .await?;
         Ok(object)
     }
@@ -595,8 +629,8 @@ pub struct UpdateUser {
     pub email: String,
 }
 
-pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<UpdateUserResponse, sqlx::Error> {
-    let res = data.update_by_id(conn).await?;
+pub async fn update(pool: &sqlx::PgPool, data: &UpdateUser) -> Result<UpdateUserResponse, sqlx::Error> {
+    let res = data.update_by_id(pool).await?;
     Ok(res)
 }
 ```
@@ -607,14 +641,17 @@ pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<
 ```rust
 impl UpdateUser {
    #[doc = "UPDATE users SET email=$1 WHERE id=$2 RETURNING id"]
-   pub async fn update_by_id(&self, conn: &mut sqlx::PgConnection) -> Result<UpdateUserResponse, sqlx::Error> {
+   pub async fn update_by_id<'e, E>(&self, executor: E) -> Result<UpdateUserResponse, sqlx::Error>
+   where
+       E: sqlx::PgExecutor<'e>,
+   {
        let object = sqlx::query_as!(
            UpdateUserResponse,
            "UPDATE users SET email=$1 WHERE id=$2 RETURNING id",
             &self.email,
             &self.id
         )
-        .fetch_one(&mut *conn)
+        .fetch_one(executor)
         .await?;
         Ok(object)
     }
@@ -636,8 +673,8 @@ pub struct UpdateUser {
     pub email: String,
 }
 
-pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<u64, sqlx::Error> {
-    let query_result = data.update_by_id(conn).await?;
+pub async fn update(pool: &sqlx::PgPool, data: &UpdateUser) -> Result<u64, sqlx::Error> {
+    let query_result = data.update_by_id(pool).await?;
     Ok(query_result.rows_affected())
 }
 ```
@@ -648,16 +685,19 @@ pub async fn update(conn: &mut sqlx::PgConnection, data: &UpdateUser) -> Result<
 ```rust
 impl UpdateUser {
    #[doc = "UPDATE users SET email=$1, updated_at=NOW() WHERE id=$2"]
-   pub async fn update_by_id(
+   pub async fn update_by_id<'e, E>(
        &self,
-       conn: &mut sqlx::PgConnection,
-   ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+       executor: E,
+   ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+   where
+       E: sqlx::PgExecutor<'e>,
+   {
        let result = sqlx::query!(
             "UPDATE users SET email=$1, updated_at=NOW() WHERE id=$2",
             &self.email,
             &self.id
         )
-        .execute(&mut *conn)
+        .execute(executor)
         .await?;
         Ok(result.into())
     }
@@ -677,8 +717,8 @@ pub struct User {
     pub id: i32,
 }
 
-async fn delete(conn: &mut sqlx::PgConnection, id: i32) -> Result<u64, sqlx::Error> {
-    let result = User::delete_by_id(conn, id).await?;
+async fn delete(pool: &sqlx::PgPool, id: i32) -> Result<u64, sqlx::Error> {
+    let result = User::delete_by_id(pool, id).await?;
     Ok(result.rows_affected())
 }
 ```
@@ -689,12 +729,15 @@ async fn delete(conn: &mut sqlx::PgConnection, id: i32) -> Result<u64, sqlx::Err
 ```rust
 impl User {
     #[doc = "DELETE FROM users WHERE id=$1"]
-    pub async fn delete_by_id(
-        conn: &mut sqlx::PgConnection,
+    pub async fn delete_by_id<'e, E>(
+        executor: E,
         id: i32,
-    ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+    ) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query!("DELETE FROM users WHERE id=$1", id)
-            .execute(&mut *conn)
+            .execute(executor)
             .await?;
         Ok(result.into())
     }
@@ -735,7 +778,10 @@ update methods on one struct:
 ```rust
 impl User {
     #[doc = "UPDATE users SET id=$1, is_active=$2, is_removed=$3 WHERE email=$4"]
-    pub async fn update_by_email(&self, conn: &mut sqlx::PgConnection) -> Result<sqlx::any::AnyQueryResult, sqlx::Error> {
+    pub async fn update_by_email<'e, E>(&self, executor: E) -> Result<sqlx::any::AnyQueryResult, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query!(
             "UPDATE users SET id=$1, is_active=$2, is_removed=$3 WHERE email=$4",
             &self.id,
@@ -743,7 +789,7 @@ impl User {
             &self.is_removed,
             &self.email
         )
-        .execute(&mut *conn)
+        .execute(executor)
         .await?;
         Ok(result.into())
     }
