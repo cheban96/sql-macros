@@ -136,12 +136,13 @@ pub struct CustomMethod<'a> {
     pub template: FilterTemplate<'a>,
 }
 
-/// A named composite `ON CONFLICT` target (`#[table(upsert =
-/// insert_or_update_member(org_id, user_id))]`), resolved against the
-/// struct's actual fields — the columns that appear in this method's
-/// `ON CONFLICT (...)` clause. Separate from the single, optional
-/// bare-`#[table(upsert)]` target on [`TableModel::upsert_target`], which
-/// only ever affects the default `insert()`/`insert_many()`.
+/// A named `ON CONFLICT` target, resolved against the struct's actual
+/// fields — the columns that appear in this method's `ON CONFLICT (...)`
+/// clause. Used both for a bare-`#[table(upsert)]` field's own
+/// single-column method (see [`TableModel::upsert_targets`]) and for
+/// a struct-level composite target (`#[table(upsert =
+/// insert_or_update_member(org_id, user_id))]`, see
+/// [`TableModel::custom_upsert_methods`]).
 #[derive(Debug)]
 pub struct CustomUpsert<'a> {
     pub method_name: syn::Ident,
@@ -334,29 +335,22 @@ impl TableModel {
         self.resolve_all(&self.custom_update)
     }
 
-    /// The single field marked with the bare `#[table(upsert)]` flag, if
-    /// any — the conflict target for the default `insert()`/
-    /// `insert_many()`. `Ok(None)` if no field carries it (a plain
-    /// insert, no `ON CONFLICT` at all). Errors if *more than one* field
-    /// carries it, since a bare flag can't express whether several fields
-    /// are meant as one composite target or several independent ones —
-    /// use `#[table(upsert = method_name(field1, field2, ...))]` on the
-    /// struct for a composite target instead (see
+    /// The fields marked bare `#[table(upsert)]` — each becomes its own
+    /// independent single-column `ON CONFLICT` target, same shape as
+    /// `select_by_<field>`/`update_by_<field>`/`delete_by_<field>`: never
+    /// silently combined with another marked field. `insert()`/
+    /// `insert_many()` themselves are unaffected by this — they stay a
+    /// plain `INSERT`, no `ON CONFLICT`, regardless of how many fields
+    /// carry the bare flag. Each derive (`SqlInsert`/`SqlInsertMany`) names
+    /// its own generated method from this (`upsert_by_<field>` /
+    /// `upsert_many_by_<field>` — same `select_by_`/`select_many_by_`
+    /// split), rather than sharing one name, so deriving both on the same
+    /// struct doesn't collide. For a single `ON CONFLICT` target spanning
+    /// more than one column, use a struct-level `#[table(upsert =
+    /// method_name(field1, field2, ...))]` instead (see
     /// [`custom_upsert_methods`]).
-    pub fn upsert_target(&self) -> darling::Result<Option<&Column>> {
-        let mut targets = self.columns.iter().filter(|c| c.is_upsert_target);
-        let Some(first) = targets.next() else {
-            return Ok(None);
-        };
-        if targets.next().is_some() {
-            return Err(darling::Error::custom(
-                "more than one field is marked `#[table(upsert)]` — for a composite conflict \
-                 target spanning multiple fields, use a struct-level `#[table(upsert = \
-                 method_name(field1, field2, ...))]` instead",
-            )
-            .with_span(&self.struct_name));
-        }
-        Ok(Some(first))
+    pub fn upsert_targets(&self) -> impl Iterator<Item = &Column> {
+        self.columns.iter().filter(|c| c.is_upsert_target)
     }
 
     fn resolve_upsert(&self, spec: &UpsertSpec) -> darling::Result<CustomUpsert<'_>> {
@@ -373,7 +367,12 @@ impl TableModel {
     /// The struct's named composite `ON CONFLICT` targets, from
     /// `#[table(upsert = method_name(field1, field2, ...))]`. Each
     /// generates its own additional method, alongside the default
-    /// `insert()`/`insert_many()` (see [`upsert_target`]).
+    /// `insert()`/`insert_many()` and any [`upsert_targets`]. `method_name`
+    /// here is exactly what the attribute says — `insert_many.rs` suffixes
+    /// it with `_many` itself (same `insert`/`insert_many` split) before
+    /// generating its own method, so deriving both `SqlInsert` and
+    /// `SqlInsertMany` with one shared attribute doesn't produce two
+    /// methods with the same name.
     pub fn custom_upsert_methods(&self) -> darling::Result<Vec<CustomUpsert<'_>>> {
         let mut errors = darling::Error::accumulator();
         let mut methods = Vec::with_capacity(self.custom_upsert.len());

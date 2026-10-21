@@ -1,14 +1,16 @@
-//! Field-level `#[table(upsert)]`: marks the `ON CONFLICT (...)` target for
-//! `SqlInsert`/`SqlInsertMany`. Every other field becomes a `DO UPDATE SET
-//! col = EXCLUDED.col` assignment; if every field were part of the target,
-//! it would fall back to `DO NOTHING` instead (nothing left to `SET`).
+//! Field-level `#[table(upsert)]`: each marked field generates its own
+//! `upsert_by_<field>` method on `SqlInsert`/`SqlInsertMany` — same shape as
+//! `select_by_<field>`/`update_by_<field>`/`delete_by_<field>`: independent,
+//! never silently combined with another marked field. That field becomes
+//! the `ON CONFLICT (...)` target; every other field becomes a `DO UPDATE
+//! SET col = EXCLUDED.col` assignment (or `DO NOTHING` if it's the only
+//! field). `insert()`/`insert_many()` themselves are unaffected either way
+//! — always a plain `INSERT`, never `ON CONFLICT`.
 //!
-//! At most one field may carry the bare flag — marking two is a compile
-//! error, since there's no way to tell from two bare flags whether you mean
-//! a composite target or two independent ones. For a composite target
-//! spanning several columns, use a struct-level `#[table(upsert =
-//! method_name(field1, field2, ...))]` instead — see `MarkTodoDone` below,
-//! which adds an *extra* method alongside the always-present `insert()`.
+//! For a single `ON CONFLICT` target spanning more than one column, use a
+//! struct-level `#[table(upsert = method_name(field1, field2, ...))]`
+//! instead — see `MarkTodoDone` below, which adds an *extra* method
+//! alongside the always-present `insert()`.
 
 use sql_macros::{SqlInsert, SqlInsertMany};
 
@@ -41,7 +43,7 @@ async fn main() -> Result<(), sqlx::Error> {
         email: "a@example.com".into(),
         is_active: true,
     }
-    .insert(&pool)
+    .upsert_by_email(&pool)
     .await?;
     println!("{user:?}");
 
@@ -56,7 +58,7 @@ async fn main() -> Result<(), sqlx::Error> {
             is_active: true,
         },
     ];
-    let users = UpsertUser::insert_many(&items, &pool).await?;
+    let users = UpsertUser::upsert_many_by_email(&items, &pool).await?;
     println!("{users:?}");
 
     // Composite conflict target: seed the user this row references.
@@ -88,7 +90,7 @@ async fn user_todo_owner(pool: &sqlx::PgPool, email: &str) -> Result<i32, sqlx::
         email: email.into(),
         is_active: true,
     }
-    .insert(pool)
+    .upsert_by_email(pool)
     .await?;
     Ok(user.id)
 }

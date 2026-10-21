@@ -1,13 +1,15 @@
-//! `SqlInsert`: a single-row `insert(&self, executor)` method, always generated.
-//! A single field marked bare `#[table(upsert)]` makes it the `ON CONFLICT
-//! (...)` target for that method — every other field becomes a `DO UPDATE
-//! SET col = EXCLUDED.col` assignment (or `DO NOTHING` if every field is
-//! part of the conflict target). More than one bare-marked field is a
-//! compile error (ambiguous — see `model::TableModel::upsert_target`); for
-//! a composite target spanning more than one field, `#[table(upsert =
-//! method_name(field1, field2, ...))]` on the struct generates an
-//! *additional*, separately named method instead, alongside the always
-//!-present `insert()`.
+//! `SqlInsert`: a single-row `insert(&self, executor)` method, always
+//! generated, always a plain `INSERT` with no `ON CONFLICT` clause — same
+//! rule as `SqlSelect`'s `select_all`-equivalent having no filter of its
+//! own. Each field marked bare `#[table(upsert)]` instead generates its own
+//! separate `upsert_by_<field>` method (same shape as `select_by_<field>`/
+//! `update_by_<field>`/`delete_by_<field>`: independent, never silently
+//! combined with another marked field) — that field becomes the `ON
+//! CONFLICT (...)` target, every other field a `DO UPDATE SET col =
+//! EXCLUDED.col` assignment (or `DO NOTHING` if it's the only field). For a
+//! single `ON CONFLICT` target spanning more than one column,
+//! `#[table(upsert = method_name(field1, field2, ...))]` on the struct
+//! generates an additional, separately named method instead.
 
 use quote::quote;
 
@@ -106,13 +108,14 @@ pub fn expand(model: &TableModel) -> darling::Result<proc_macro2::TokenStream> {
     let mut errors = darling::Error::accumulator();
     let mut methods = Vec::new();
 
-    // The default `insert()` — always generated. Its `ON CONFLICT` target
-    // is the single bare-`#[table(upsert)]` field, if any (none -> a plain
-    // insert, no `ON CONFLICT` at all).
+    // `insert()` — always generated, always plain (no `ON CONFLICT`).
     let default_method_name = syn::Ident::new("insert", struct_name.span());
-    if let Some(target) = errors.handle(model.upsert_target()) {
-        let targets: Vec<&model::Column> = target.into_iter().collect();
-        methods.push(generate_method(&ctx, &default_method_name, &targets));
+    methods.push(generate_method(&ctx, &default_method_name, &[]));
+
+    // One `upsert_by_<field>` method per bare-`#[table(upsert)]` field.
+    for column in model.upsert_targets() {
+        let method_name = syn::Ident::new(&format!("upsert_by_{}", column.ident), column.ident.span());
+        methods.push(generate_method(&ctx, &method_name, &[column]));
     }
 
     // Additional named methods for a composite `ON CONFLICT` target, e.g.
@@ -199,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_target_generates_on_conflict_do_update() {
+    fn bare_upsert_field_generates_its_own_upsert_by_method() {
         let input = parse(q! {
             struct CreateUser {
                 #[table(upsert)]
@@ -209,6 +212,9 @@ mod tests {
         });
         let model = TableModel::from_derive_input(&input).unwrap();
         let tokens = expand(&model).unwrap().to_string();
+        // `insert()` stays plain — no `ON CONFLICT` — alongside the new method.
+        assert!(tokens.contains("fn insert <"));
+        assert!(tokens.contains("fn upsert_by_email"));
         assert!(tokens.contains("ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active"));
     }
 
@@ -226,7 +232,9 @@ mod tests {
     }
 
     #[test]
-    fn two_bare_upsert_fields_is_a_spanned_error() {
+    fn two_bare_upsert_fields_generate_two_independent_methods() {
+        // Same shape as select_by_<field>/update_by_<field>/delete_by_<field>:
+        // two marked fields never combine into one method.
         let input = parse(q! {
             struct AddMember {
                 #[table(upsert)]
@@ -237,9 +245,11 @@ mod tests {
             }
         });
         let model = TableModel::from_derive_input(&input).unwrap();
-        let err = expand(&model).unwrap_err();
-        assert!(err.to_string().contains("more than one field"));
-        assert!(err.to_string().contains("upsert = method_name"));
+        let tokens = expand(&model).unwrap().to_string();
+        assert!(tokens.contains("fn upsert_by_org_id"));
+        assert!(tokens.contains("ON CONFLICT (org_id) DO UPDATE SET user_id=EXCLUDED.user_id, role=EXCLUDED.role"));
+        assert!(tokens.contains("fn upsert_by_user_id"));
+        assert!(tokens.contains("ON CONFLICT (user_id) DO UPDATE SET org_id=EXCLUDED.org_id, role=EXCLUDED.role"));
     }
 
     #[test]

@@ -320,13 +320,17 @@ pub struct FieldAttrs {
     pub update: util::Flag,
     #[darling(default)]
     pub delete: util::Flag,
-    /// Marks this field as *the* `ON CONFLICT (...)` target for
-    /// `SqlInsert`/`SqlInsertMany`'s default `insert()`/`insert_many()`
-    /// method — every other field becomes a `DO UPDATE SET col =
-    /// EXCLUDED.col` assignment. At most one field per struct may carry
-    /// this; for a composite target spanning more than one field, use a
-    /// struct-level `#[table(upsert = method_name(field1, field2, ...))]`
-    /// instead, which generates an additional, separately named method.
+    /// Generates its own `upsert_by_<field>` method on `SqlInsert`/
+    /// `SqlInsertMany` — an `INSERT ... ON CONFLICT (this_field) DO UPDATE
+    /// SET col = EXCLUDED.col, ...` for every other field — same shape as
+    /// `select_by_<field>`/`update_by_<field>`/`delete_by_<field>`: each
+    /// marked field is independent and gets its own method, never silently
+    /// combined with another marked field. The plain `insert()`/
+    /// `insert_many()` methods are unaffected either way (never `ON
+    /// CONFLICT`). For one `ON CONFLICT` target spanning more than one
+    /// column, use a struct-level `#[table(upsert = method_name(field1,
+    /// field2, ...))]` instead, which generates an additional, separately
+    /// named method.
     #[darling(default)]
     pub upsert: util::Flag,
 

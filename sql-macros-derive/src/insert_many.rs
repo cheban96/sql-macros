@@ -122,15 +122,29 @@ pub fn expand(model: &TableModel) -> darling::Result<proc_macro2::TokenStream> {
     let mut errors = darling::Error::accumulator();
     let mut methods = Vec::new();
 
+    // `insert_many()` — always generated, always plain (no `ON CONFLICT`).
     let default_method_name = syn::Ident::new("insert_many", struct_name.span());
-    if let Some(target) = errors.handle(model.upsert_target()) {
-        let targets: Vec<&model::Column> = target.into_iter().collect();
-        methods.push(generate_method(&ctx, &default_method_name, &targets));
+    methods.push(generate_method(&ctx, &default_method_name, &[]));
+
+    // One `upsert_many_by_<field>` method per bare-`#[table(upsert)]` field
+    // — `_many_by_` (not `_by_`) so this doesn't collide with `SqlInsert`'s
+    // `upsert_by_<field>` when a struct derives both.
+    for column in model.upsert_targets() {
+        let method_name =
+            syn::Ident::new(&format!("upsert_many_by_{}", column.ident), column.ident.span());
+        methods.push(generate_method(&ctx, &method_name, &[column]));
     }
 
+    // Struct-level composite upsert, e.g. `#[table(upsert =
+    // mark_done(user_id, todo_id))]`. Named `<method_name>_many` (not bare
+    // `<method_name>`) — same `insert`/`insert_many` split — so this
+    // doesn't collide with `SqlInsert`'s own method of that name when a
+    // struct derives both.
     if let Some(customs) = errors.handle(model.custom_upsert_methods()) {
         for custom in customs {
-            methods.push(generate_method(&ctx, &custom.method_name, &custom.targets));
+            let method_name =
+                syn::Ident::new(&format!("{}_many", custom.method_name), custom.method_name.span());
+            methods.push(generate_method(&ctx, &method_name, &custom.targets));
         }
     }
 
@@ -163,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_target_generates_on_conflict_do_update() {
+    fn bare_upsert_field_generates_its_own_upsert_many_by_method() {
         let input = parse(q! {
             struct CreateUser {
                 #[table(upsert)]
@@ -173,11 +187,13 @@ mod tests {
         });
         let model = TableModel::from_derive_input(&input).unwrap();
         let tokens = expand(&model).unwrap().to_string();
+        assert!(tokens.contains("fn insert_many <"));
+        assert!(tokens.contains("fn upsert_many_by_email"));
         assert!(tokens.contains("ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active"));
     }
 
     #[test]
-    fn two_bare_upsert_fields_is_a_spanned_error() {
+    fn two_bare_upsert_fields_generate_two_independent_methods() {
         let input = parse(q! {
             struct AddMember {
                 #[table(upsert)]
@@ -188,12 +204,18 @@ mod tests {
             }
         });
         let model = TableModel::from_derive_input(&input).unwrap();
-        let err = expand(&model).unwrap_err();
-        assert!(err.to_string().contains("more than one field"));
+        let tokens = expand(&model).unwrap().to_string();
+        assert!(tokens.contains("fn upsert_many_by_org_id"));
+        assert!(tokens.contains("ON CONFLICT (org_id) DO UPDATE SET user_id=EXCLUDED.user_id, role=EXCLUDED.role"));
+        assert!(tokens.contains("fn upsert_many_by_user_id"));
+        assert!(tokens.contains("ON CONFLICT (user_id) DO UPDATE SET org_id=EXCLUDED.org_id, role=EXCLUDED.role"));
     }
 
     #[test]
-    fn composite_upsert_generates_an_additional_named_method() {
+    fn composite_upsert_generates_an_additional_named_method_suffixed_many() {
+        // Suffixed `_many` (not the bare `method_name` from the attribute)
+        // so this doesn't collide with `SqlInsert`'s own method of that
+        // name when a struct derives both.
         let input = parse(q! {
             #[table(upsert = insert_or_update_members(org_id, user_id))]
             struct AddMember {
@@ -205,7 +227,7 @@ mod tests {
         let model = TableModel::from_derive_input(&input).unwrap();
         let tokens = expand(&model).unwrap().to_string();
         assert!(tokens.contains("fn insert_many <"));
-        assert!(tokens.contains("fn insert_or_update_members"));
+        assert!(tokens.contains("fn insert_or_update_members_many <"));
         assert!(tokens.contains("ON CONFLICT (org_id, user_id) DO UPDATE SET role=EXCLUDED.role"));
     }
 }

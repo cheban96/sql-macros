@@ -68,21 +68,45 @@ Also new in 0.3.0:
   now `&mut *tx` (inside a `sqlx::Transaction`) or `&mut conn` (a bare
   `PgConnection`, e.g. from `pool.acquire()`) works too.
 
-## 0.3.1 changes
+## 0.4.0 changes
 
-`SqlInsert`/`SqlInsertMany`/`SqlUpdate`/`SqlDelete` methods now also take
-`impl sqlx::PgExecutor<'_>`, same as the select-side derives got in 0.3.0.
-Not breaking — `&mut conn`/`&mut *tx` call sites keep working — but these
-write-side methods, which used to require `&mut sqlx::PgConnection`
-specifically, now also accept `&pool` directly, without pre-acquiring a
-connection first.
+**Breaking change:**
+
+- Bare `#[table(upsert)]` no longer modifies the shared `insert()`/
+  `insert_many()` method. Each marked field now generates its *own*
+  independent method instead — `upsert_by_<field>` for `SqlInsert`,
+  `upsert_many_by_<field>` for `SqlInsertMany` — same shape as
+  `select_by_<field>`/`update_by_<field>`/`delete_by_<field>`: a marked
+  field is never silently combined with another one. Marking two (or more)
+  fields bare is no longer a compile error either — each just gets its own
+  method. `insert()`/`insert_many()` themselves are now *always* a plain
+  `INSERT`, never `ON CONFLICT`, regardless of how many fields are marked.
+  This supersedes 0.3.0's single-bare-field behavior (`insert()` itself
+  carrying `ON CONFLICT`) and its "2+ bare fields is a compile error" rule
+  — see [Upsert](#upsert).
+- Fixed: a struct-level `#[table(upsert = method_name(...))]` on a struct
+  deriving both `SqlInsert` and `SqlInsertMany` used to generate the same
+  method name for both (`method_name`), which fails to compile
+  (`duplicate definitions with name ...`) the moment both derives are
+  actually present together. `SqlInsertMany` now names its copy
+  `method_name_many` instead — same `insert`/`insert_many` split used
+  everywhere else — so the two coexist.
+
+Also new in 0.4.0:
+
+- `SqlInsert`/`SqlInsertMany`/`SqlUpdate`/`SqlDelete` methods now also take
+  `impl sqlx::PgExecutor<'_>`, same as the select-side derives got in 0.3.0.
+  Not breaking on its own — `&mut conn`/`&mut *tx` call sites keep working —
+  but these write-side methods, which used to require `&mut
+  sqlx::PgConnection` specifically, now also accept `&pool` directly,
+  without pre-acquiring a connection first.
 
 ## Install
 
 ```toml
 # Cargo.toml
 [dependencies]
-sql-macros = { version = "0.3.1" }
+sql-macros = { version = "0.4" }
 ```
 
 ## Usage
@@ -419,11 +443,14 @@ Without `return_type`, `insert_many` returns `Result<sqlx::any::AnyQueryResult, 
 
 ### Upsert
 
-Mark a field `#[table(upsert)]` to make it the `ON CONFLICT (...)` target for
-`SqlInsert`/`SqlInsertMany`. Every other field becomes a
-`DO UPDATE SET col = EXCLUDED.col` assignment (if every field were part of
-the target, it falls back to `DO NOTHING`, since an empty `SET` is invalid
-SQL).
+Mark a field `#[table(upsert)]` to generate its own `upsert_by_<field>`
+method on `SqlInsert` — same shape as `select_by_<field>`/
+`update_by_<field>`/`delete_by_<field>`: that field becomes the
+`ON CONFLICT (...)` target, every other field becomes a `DO UPDATE SET col
+= EXCLUDED.col` assignment (or `DO NOTHING` if it's the only field, since an
+empty `SET` is invalid SQL). The plain `insert()` method is unaffected —
+always a plain `INSERT`, never `ON CONFLICT`, whether or not any field is
+marked.
 
 ```rust
 use sql_macros::SqlInsert;
@@ -437,7 +464,7 @@ pub struct UpsertUser {
 }
 
 pub async fn upsert(pool: &sqlx::PgPool, data: &UpsertUser) -> Result<User, sqlx::Error> {
-    let user = data.insert(pool).await?;
+    let user = data.upsert_by_email(pool).await?;
     Ok(user)
 }
 ```
@@ -447,8 +474,16 @@ pub async fn upsert(pool: &sqlx::PgPool, data: &UpsertUser) -> Result<User, sqlx
 
 ```rust
 impl UpsertUser {
-    #[doc = "INSERT INTO users (email, is_active) VALUES ($1,$2) ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active RETURNING *"]
+    #[doc = "INSERT INTO users (email, is_active) VALUES ($1,$2)"]
     pub async fn insert<'e, E>(&self, executor: E) -> Result<User, sqlx::Error>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        // ... no `ON CONFLICT` ...
+    }
+
+    #[doc = "INSERT INTO users (email, is_active) VALUES ($1,$2) ON CONFLICT (email) DO UPDATE SET is_active=EXCLUDED.is_active RETURNING *"]
+    pub async fn upsert_by_email<'e, E>(&self, executor: E) -> Result<User, sqlx::Error>
     where
         E: sqlx::PgExecutor<'e>,
     {
@@ -467,18 +502,25 @@ impl UpsertUser {
 
 </details>
 
-`SqlInsertMany` supports the same `#[table(upsert)]` attribute; the
-`ON CONFLICT` clause is appended once, after the batch `VALUES (...), (...),
-...` list, and applies to every row.
+`SqlInsertMany` supports the same `#[table(upsert)]` attribute, naming its
+method `upsert_many_by_<field>` instead (not `upsert_by_<field>`, so
+deriving both `SqlInsert` and `SqlInsertMany` on one struct doesn't collide)
+— the `ON CONFLICT` clause is appended once, after the batch `VALUES (...),
+(...), ...` list, and applies to every row.
 
-At most one field may carry the bare `#[table(upsert)]` flag — marking two is
-a compile error, since there's no way to tell from two bare flags whether you
-mean a single composite conflict target or two independent ones. For a
-conflict target spanning more than one column, use a struct-level
-`#[table(upsert = method_name(field1, field2, ...))]` attribute instead. It
-generates an *additional*, separately named method — the plain `insert()`
-(or `insert_many()`) is still generated alongside it, since that method has
-no bare-marked field of its own:
+Marking two (or more) fields bare `#[table(upsert)]` is **not** an error —
+each marked field is independent and gets its own method
+(`upsert_by_org_id`, `upsert_by_user_id`, ...), never silently combined with
+another marked field — same rule as two `#[table(select)]` fields never
+combining into one `select_by_...`. For a single `ON CONFLICT` target
+spanning more than one column, use a struct-level `#[table(upsert =
+method_name(field1, field2, ...))]` attribute instead. It generates an
+*additional*, separately named method — the plain `insert()` (or
+`insert_many()`) is still generated alongside it, since that method is
+never affected by `#[table(upsert)]` in any form. If the struct derives
+both `SqlInsert` and `SqlInsertMany`, `SqlInsertMany`'s copy of the method
+is named `method_name_many` (not bare `method_name`), same `insert`/
+`insert_many` split as everywhere else — so the two don't collide:
 
 ```rust
 use sql_macros::SqlInsert;
